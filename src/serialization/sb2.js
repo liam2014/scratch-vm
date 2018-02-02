@@ -88,17 +88,18 @@ const flatten = function (blocks) {
  * a list of blocks in a branch (e.g., in forever),
  * or a list of blocks in an argument (e.g., move [pick random...]).
  * @param {Array.<object>} blockList SB2 JSON-format block list.
+ * @param {Function} addBroadcastMsg function to update broadcast message name map
  * @param {Function} getVariableId function to retreive a variable's ID based on name
  * @param {ImportedExtensionsInfo} extensions - (in/out) parsed extension information will be stored here.
  * @return {Array.<object>} Scratch VM-format block list.
  */
-const parseBlockList = function (blockList, getVariableId, extensions) {
+const parseBlockList = function (blockList, addBroadcastMsg, getVariableId, extensions) {
     const resultingList = [];
     let previousBlock = null; // For setting next.
     for (let i = 0; i < blockList.length; i++) {
         const block = blockList[i];
         // eslint-disable-next-line no-use-before-define
-        const parsedBlock = parseBlock(block, getVariableId, extensions);
+        const parsedBlock = parseBlock(block, addBroadcastMsg, getVariableId, extensions);
         if (typeof parsedBlock === 'undefined') continue;
         if (previousBlock) {
             parsedBlock.parent = previousBlock.id;
@@ -115,16 +116,17 @@ const parseBlockList = function (blockList, getVariableId, extensions) {
  * This should only handle top-level scripts that include X, Y coordinates.
  * @param {!object} scripts Scripts object from SB2 JSON.
  * @param {!Blocks} blocks Blocks object to load parsed blocks into.
+ * @param {Function} addBroadcastMsg function to update broadcast message name map
  * @param {Function} getVariableId function to retreive a variable's ID based on name
  * @param {ImportedExtensionsInfo} extensions - (in/out) parsed extension information will be stored here.
  */
-const parseScripts = function (scripts, blocks, getVariableId, extensions) {
+const parseScripts = function (scripts, blocks, addBroadcastMsg, getVariableId, extensions) {
     for (let i = 0; i < scripts.length; i++) {
         const script = scripts[i];
         const scriptX = script[0];
         const scriptY = script[1];
         const blockList = script[2];
-        const parsedBlockList = parseBlockList(blockList, getVariableId, extensions);
+        const parsedBlockList = parseBlockList(blockList, addBroadcastMsg, getVariableId, extensions);
         if (parsedBlockList[0]) {
             // Adjust script coordinates to account for
             // larger block size in scratch-blocks.
@@ -162,6 +164,29 @@ const generateVariableIdGetter = (function () {
             // Not top-level, so first check the global name map
             if (globalVariableNameMap[name]) return globalVariableNameMap[name];
             return namer(targetId, name);
+        };
+    };
+}());
+
+const globalBroadcastMsgStateGenerator = (function () {
+    let broadcastMsgNameMap = {};
+    const allBroadcastFields = [];
+    const emptyStringName = uid();
+    return function (topLevel) {
+        if (topLevel) broadcastMsgNameMap = {};
+        return {
+            broadcastMsgMapUpdater: function (name, field) {
+                name = name.toLowerCase();
+                if (name === '') {
+                    name = emptyStringName;
+                }
+                broadcastMsgNameMap[name] = `broadcastMsgId-${name}`;
+                allBroadcastFields.push(field);
+                return broadcastMsgNameMap[name];
+            },
+            globalBroadcastMsgs: broadcastMsgNameMap,
+            allBroadcastFields: allBroadcastFields,
+            emptyMsgName: emptyStringName
         };
     };
 }());
@@ -227,6 +252,9 @@ const parseScratchObject = function (object, runtime, extensions, topLevel) {
 
     const getVariableId = generateVariableIdGetter(target.id, topLevel);
 
+    const globalBroadcastMsgObj = globalBroadcastMsgStateGenerator(topLevel);
+    const addBroadcastMsg = globalBroadcastMsgObj.broadcastMsgMapUpdater;
+
     // Load target properties from JSON.
     if (object.hasOwnProperty('variables')) {
         for (let j = 0; j < object.variables.length; j++) {
@@ -244,7 +272,7 @@ const parseScratchObject = function (object, runtime, extensions, topLevel) {
 
     // If included, parse any and all scripts/blocks on the object.
     if (object.hasOwnProperty('scripts')) {
-        parseScripts(object.scripts, blocks, getVariableId, extensions);
+        parseScripts(object.scripts, blocks, addBroadcastMsg, getVariableId, extensions);
     }
 
     if (object.hasOwnProperty('lists')) {
@@ -317,6 +345,46 @@ const parseScratchObject = function (object, runtime, extensions, topLevel) {
         Promise.all(
             childrenPromises
         ).then(children => {
+            // Need create broadcast msgs as variables after
+            // all other targets have finished processing.
+            if (target.isStage) {
+                const allBroadcastMsgs = globalBroadcastMsgObj.globalBroadcastMsgs;
+                const allBroadcastMsgFields = globalBroadcastMsgObj.allBroadcastFields;
+                const oldEmptyMsgName = globalBroadcastMsgObj.emptyMsgName;
+                if (allBroadcastMsgs[oldEmptyMsgName]) {
+                    // Find a fresh 'messageN'
+                    let currIndex = 1;
+                    while (allBroadcastMsgs[`message${currIndex}`]) {
+                        currIndex += 1;
+                    }
+                    const newEmptyMsgName = `message${currIndex}`;
+                    // Add the new empty message name to the broadcast message
+                    // name map, and assign it the old id.
+                    // Then, delete the old entry in map.
+                    allBroadcastMsgs[newEmptyMsgName] = allBroadcastMsgs[oldEmptyMsgName];
+                    delete allBroadcastMsgs[oldEmptyMsgName];
+                    // Now update all the broadcast message fields with
+                    // the new empty message name.
+                    for (let i = 0; i < allBroadcastMsgFields.length; i++) {
+                        if (allBroadcastMsgFields[i].value === '') {
+                            allBroadcastMsgFields[i].value = newEmptyMsgName;
+                        }
+                    }
+                }
+                // Traverse the broadcast message name map and create
+                // broadcast messages as variables on the stage (which is this
+                // target).
+                for (const msgName in allBroadcastMsgs) {
+                    const msgId = allBroadcastMsgs[msgName];
+                    const newMsg = new Variable(
+                        msgId,
+                        msgName,
+                        Variable.BROADCAST_MESSAGE_TYPE,
+                        false
+                    );
+                    target.variables[newMsg.id] = newMsg;
+                }
+            }
             let targets = [target];
             for (let n = 0; n < children.length; n++) {
                 targets = targets.concat(children[n]);
@@ -349,11 +417,12 @@ const sb2import = function (json, runtime, optForceSprite) {
 /**
  * Parse a single SB2 JSON-formatted block and its children.
  * @param {!object} sb2block SB2 JSON-formatted block.
+ * @param {Function} addBroadcastMsg function to update broadcast message name map
  * @param {Function} getVariableId function to retrieve a variable's ID based on name
  * @param {ImportedExtensionsInfo} extensions - (in/out) parsed extension information will be stored here.
  * @return {object} Scratch VM format block, or null if unsupported object.
  */
-const parseBlock = function (sb2block, getVariableId, extensions) {
+const parseBlock = function (sb2block, addBroadcastMsg, getVariableId, extensions) {
     // First item in block object is the old opcode (e.g., 'forward:').
     const oldOpcode = sb2block[0];
     // Convert the block using the specMap. See sb2specmap.js.
@@ -404,10 +473,10 @@ const parseBlock = function (sb2block, getVariableId, extensions) {
                 let innerBlocks;
                 if (typeof providedArg[0] === 'object' && providedArg[0]) {
                     // Block list occupies the input.
-                    innerBlocks = parseBlockList(providedArg, getVariableId, extensions);
+                    innerBlocks = parseBlockList(providedArg, addBroadcastMsg, getVariableId, extensions);
                 } else {
                     // Single block occupies the input.
-                    innerBlocks = [parseBlock(providedArg, getVariableId, extensions)];
+                    innerBlocks = [parseBlock(providedArg, addBroadcastMsg, getVariableId, extensions)];
                 }
                 let previousBlock = null;
                 for (let j = 0; j < innerBlocks.length; j++) {
@@ -459,6 +528,11 @@ const parseBlock = function (sb2block, getVariableId, extensions) {
                 if (shadowObscured) {
                     fieldValue = '#990000';
                 }
+            } else if (expectedArg.inputOp === 'event_broadcast_menu') {
+                fieldName = 'BROADCAST_OPTION';
+                if (shadowObscured) {
+                    fieldValue = '';
+                }
             } else if (shadowObscured) {
                 // Filled drop-down menu.
                 fieldValue = '';
@@ -468,6 +542,23 @@ const parseBlock = function (sb2block, getVariableId, extensions) {
                 name: fieldName,
                 value: fieldValue
             };
+            // event_broadcast_menus have some extra properties to add to the
+            // field and a different value than the rest
+            if (expectedArg.inputOp === 'event_broadcast_menu') {
+                if (!shadowObscured) {
+                    // Need to update the broadcast message name map with
+                    // the value of this field.
+                    // Also need to provide the fields[fieldName] object,
+                    // so that we can later update its value property, e.g.
+                    // if sb2 message name is empty string, we will later
+                    // replace this field's value with messageN
+                    // once we can traverse through all the existing message names
+                    // and come up with a fresh messageN.
+                    const broadcastId = addBroadcastMsg(fieldValue, fields[fieldName]);
+                    fields[fieldName].id = broadcastId;
+                }
+                fields[fieldName].variableType = expectedArg.variableType;
+            }
             activeBlock.children.push({
                 id: inputUid,
                 opcode: expectedArg.inputOp,
@@ -493,6 +584,16 @@ const parseBlock = function (sb2block, getVariableId, extensions) {
             if (expectedArg.fieldName === 'VARIABLE' || expectedArg.fieldName === 'LIST') {
                 // Add `id` property to variable fields
                 activeBlock.fields[expectedArg.fieldName].id = getVariableId(providedArg);
+            } else if (expectedArg.fieldName === 'BROADCAST_OPTION') {
+                // Add the name in this field to the broadcast msg name map.
+                // Also need to provide the fields[fieldName] object,
+                // so that we can later update its value property, e.g.
+                // if sb2 message name is empty string, we will later
+                // replace this field's value with messageN
+                // once we can traverse through all the existing message names
+                // and come up with a fresh messageN.
+                const broadcastId = addBroadcastMsg(providedArg, activeBlock.fields[expectedArg.fieldName]);
+                activeBlock.fields[expectedArg.fieldName].id = broadcastId;
             }
             const varType = expectedArg.variableType;
             if (typeof varType === 'string') {
@@ -500,6 +601,41 @@ const parseBlock = function (sb2block, getVariableId, extensions) {
             }
         }
     }
+
+    // Updates for blocks that have new menus (e.g. in Looks)
+    switch (oldOpcode) {
+    case 'comeToFront':
+        activeBlock.fields.FRONT_BACK = {
+            name: 'FRONT_BACK',
+            value: 'front'
+        };
+        break;
+    case 'goBackByLayers:':
+        activeBlock.fields.FORWARD_BACKWARD = {
+            name: 'FORWARD_BACKWARD',
+            value: 'backward'
+        };
+        break;
+    case 'backgroundIndex':
+        activeBlock.fields.NUMBER_NAME = {
+            name: 'NUMBER_NAME',
+            value: 'number'
+        };
+        break;
+    case 'sceneName':
+        activeBlock.fields.NUMBER_NAME = {
+            name: 'NUMBER_NAME',
+            value: 'name'
+        };
+        break;
+    case 'costumeIndex':
+        activeBlock.fields.NUMBER_NAME = {
+            name: 'NUMBER_NAME',
+            value: 'number'
+        };
+        break;
+    }
+
     // Special cases to generate mutations.
     if (oldOpcode === 'stopScripts') {
         // Mutation for stop block: if the argument is 'other scripts',

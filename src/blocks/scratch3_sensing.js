@@ -21,6 +21,7 @@ class Scratch3SensingBlocks {
         this._questionList = [];
 
         this.runtime.on('ANSWER', this._onAnswer.bind(this));
+        this.runtime.on('PROJECT_START', this._resetAnswer.bind(this));
         this.runtime.on('PROJECT_STOP_ALL', this._clearAllQuestions.bind(this));
     }
 
@@ -39,6 +40,7 @@ class Scratch3SensingBlocks {
             sensing_of: this.getAttributeOf,
             sensing_mousex: this.getMouseX,
             sensing_mousey: this.getMouseY,
+            sensing_setdragmode: this.setDragMode,
             sensing_mousedown: this.getMouseDown,
             sensing_keypressed: this.getKeyPressed,
             sensing_current: this.current,
@@ -54,7 +56,6 @@ class Scratch3SensingBlocks {
             sensing_answer: {},
             sensing_loudness: {},
             sensing_timer: {},
-            sensing_of: {},
             sensing_current: {}
         };
     }
@@ -63,9 +64,9 @@ class Scratch3SensingBlocks {
         this._answer = answer;
         const questionObj = this._questionList.shift();
         if (questionObj) {
-            const [_question, resolve, target, wasVisible] = questionObj;
-            // If the target was visible when asked, hide the say bubble.
-            if (wasVisible) {
+            const [_question, resolve, target, wasVisible, wasStage] = questionObj;
+            // If the target was visible when asked, hide the say bubble unless the target was the stage.
+            if (wasVisible && !wasStage) {
                 this.runtime.emit('SAY', target, 'say', '');
             }
             resolve();
@@ -73,16 +74,20 @@ class Scratch3SensingBlocks {
         }
     }
 
-    _enqueueAsk (question, resolve, target, wasVisible) {
-        this._questionList.push([question, resolve, target, wasVisible]);
+    _resetAnswer () {
+        this._answer = '';
+    }
+
+    _enqueueAsk (question, resolve, target, wasVisible, wasStage) {
+        this._questionList.push([question, resolve, target, wasVisible, wasStage]);
     }
 
     _askNextQuestion () {
         if (this._questionList.length > 0) {
-            const [question, _resolve, target, wasVisible] = this._questionList[0];
+            const [question, _resolve, target, wasVisible, wasStage] = this._questionList[0];
             // If the target is visible, emit a blank question and use the
-            // say event to trigger a bubble.
-            if (wasVisible) {
+            // say event to trigger a bubble unless the target was the stage.
+            if (wasVisible && !wasStage) {
                 this.runtime.emit('SAY', target, 'say', question);
                 this.runtime.emit('QUESTION', '');
             } else {
@@ -100,7 +105,7 @@ class Scratch3SensingBlocks {
         const _target = util.target;
         return new Promise(resolve => {
             const isQuestionAsked = this._questionList.length > 0;
-            this._enqueueAsk(args.QUESTION, resolve, _target, _target.visible);
+            this._enqueueAsk(String(args.QUESTION), resolve, _target, _target.visible, _target.isStage);
             if (!isQuestionAsked) {
                 this._askNextQuestion();
             }
@@ -114,8 +119,8 @@ class Scratch3SensingBlocks {
     touchingObject (args, util) {
         const requestedObject = args.TOUCHINGOBJECTMENU;
         if (requestedObject === '_mouse_') {
-            const mouseX = util.ioQuery('mouse', 'getX');
-            const mouseY = util.ioQuery('mouse', 'getY');
+            const mouseX = util.ioQuery('mouse', 'getClientX');
+            const mouseY = util.ioQuery('mouse', 'getClientY');
             return util.target.isTouchingPoint(mouseX, mouseY);
         } else if (requestedObject === '_edge_') {
             return util.target.isTouchingEdge();
@@ -141,8 +146,8 @@ class Scratch3SensingBlocks {
         let targetX = 0;
         let targetY = 0;
         if (args.DISTANCETOMENU === '_mouse_') {
-            targetX = util.ioQuery('mouse', 'getX');
-            targetY = util.ioQuery('mouse', 'getY');
+            targetX = util.ioQuery('mouse', 'getScratchX');
+            targetY = util.ioQuery('mouse', 'getScratchY');
         } else {
             const distTarget = this.runtime.getSpriteTargetByName(
                 args.DISTANCETOMENU
@@ -157,6 +162,10 @@ class Scratch3SensingBlocks {
         return Math.sqrt((dx * dx) + (dy * dy));
     }
 
+    setDragMode (args, util) {
+        util.target.setDraggable(args.DRAG_MODE === 'draggable');
+    }
+
     getTimer (args, util) {
         return util.ioQuery('clock', 'projectTimer');
     }
@@ -166,11 +175,11 @@ class Scratch3SensingBlocks {
     }
 
     getMouseX (args, util) {
-        return util.ioQuery('mouse', 'getX');
+        return util.ioQuery('mouse', 'getScratchX');
     }
 
     getMouseY (args, util) {
-        return util.ioQuery('mouse', 'getY');
+        return util.ioQuery('mouse', 'getScratchY');
     }
 
     getMouseDown (args, util) {

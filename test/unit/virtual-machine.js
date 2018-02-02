@@ -287,12 +287,18 @@ test('emitWorkspaceUpdate', t => {
                 global: {
                     toXML: () => 'global'
                 }
+            },
+            blocks: {
+                toXML: () => 'blocks'
             }
         }, {
             variables: {
                 unused: {
                     toXML: () => 'unused'
                 }
+            },
+            blocks: {
+                toXML: () => 'blocks'
             }
         }, {
             variables: {
@@ -314,5 +320,44 @@ test('emitWorkspaceUpdate', t => {
     t.notEqual(xml.indexOf('local'), -1);
     t.equal(xml.indexOf('unused'), -1);
     t.notEqual(xml.indexOf('blocks'), -1);
+    t.end();
+});
+
+test('drag IO redirect', t => {
+    const vm = new VirtualMachine();
+    const sprite1Info = [];
+    const sprite2Info = [];
+    vm.runtime.targets = [
+        {
+            id: 'sprite1',
+            postSpriteInfo: data => sprite1Info.push(data)
+        }, {
+            id: 'sprite2',
+            postSpriteInfo: data => sprite2Info.push(data),
+            startDrag: () => {},
+            stopDrag: () => {}
+        }
+    ];
+    vm.editingTarget = vm.runtime.targets[0];
+    // Stub emitWorkspace/TargetsUpdate, it needs data we don't care about here
+    vm.emitWorkspaceUpdate = () => null;
+    vm.emitTargetsUpdate = () => null;
+
+    // postSpriteInfo should go to the editing target by default``
+    vm.postSpriteInfo('sprite1 info');
+    t.equal(sprite1Info[0], 'sprite1 info');
+
+    // postSprite info goes to the drag target if it exists
+    vm.startDrag('sprite2');
+    vm.postSpriteInfo('sprite2 info');
+    t.equal(sprite2Info[0], 'sprite2 info');
+
+    // stop drag should set the editing target
+    vm.stopDrag('sprite2');
+    t.equal(vm.editingTarget.id, 'sprite2');
+
+    // Then postSpriteInfo should continue posting to the new editing target
+    vm.postSpriteInfo('sprite2 info 2');
+    t.equal(sprite2Info[1], 'sprite2 info 2');
     t.end();
 });

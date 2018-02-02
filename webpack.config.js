@@ -84,13 +84,15 @@ module.exports = [
                 'scratch-blocks/dist/vertical.js',
                 // Audio
                 'scratch-audio',
+                // Storage
+                'scratch-storage',
                 // Renderer
                 'scratch-render'
             ]
         },
         output: {
-            libraryTarget: 'umd',
-            path: path.resolve('playground')
+            path: path.resolve(__dirname, 'playground'),
+            filename: '[name].js'
         },
         module: {
             rules: base.module.rules.concat([
@@ -115,8 +117,12 @@ module.exports = [
                     loader: 'expose-loader?AudioEngine'
                 },
                 {
+                    test: require.resolve('scratch-storage'),
+                    loader: 'expose-loader?ScratchStorage'
+                },
+                {
                     test: require.resolve('scratch-render'),
-                    loader: 'expose-loader?RenderWebGL'
+                    loader: 'expose-loader?ScratchRender'
                 }
             ])
         },
@@ -128,6 +134,8 @@ module.exports = [
                 from: 'node_modules/highlightjs/styles/zenburn.css'
             }, {
                 from: 'node_modules/scratch-storage/dist/web'
+            }, {
+                from: 'node_modules/scratch-render/dist/web'
             }, {
                 from: 'src/playground'
             }])
